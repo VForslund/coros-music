@@ -211,7 +211,7 @@ func (a *Auth) HandleTracks(w http.ResponseWriter, r *http.Request) {
 				Artist:       artist,
 				Album:        t.Album.Name,
 				DurationMs:   int(t.Duration),
-				SyncFilename: sanitizeFilename(string(t.ID), artist, t.Name),
+				SyncFilename: sanitizeFilename(artist, t.Name),
 			})
 		}
 

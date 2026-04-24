@@ -5,8 +5,8 @@ import (
 	"unicode"
 )
 
-// sanitizeFilename builds "{TrackID} — {Artist} - {Title}.mp3" with filesystem-safe chars.
-func sanitizeFilename(id, artist, title string) string {
+// sanitizeFilename builds "{Artist} - {Title}.mp3" with filesystem-safe chars.
+func sanitizeFilename(artist, title string) string {
 	clean := func(s string) string {
 		var b strings.Builder
 		for _, r := range s {
@@ -16,6 +16,6 @@ func sanitizeFilename(id, artist, title string) string {
 		}
 		return strings.TrimSpace(b.String())
 	}
-	return id + " — " + clean(artist) + " - " + clean(title) + ".mp3"
+	return clean(artist) + " - " + clean(title) + ".mp3"
 }
 

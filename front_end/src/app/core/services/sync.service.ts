@@ -1,8 +1,8 @@
 import { Injectable, inject } from '@angular/core';
 import { FileBridgeService } from './file-bridge.service';
 import {
-  syncPlaylist,
-  tracksToSync,
+  selectedPlaylist,
+  tracks,
   existingFiles,
   totalTracks,
   completedTracks,
@@ -10,33 +10,46 @@ import {
   syncStatus,
   syncError,
 } from '../state/sync.state';
+import { Track } from '../models/track.model';
+import { parseContentDispositionFilename } from '../utils/content-disposition.util';
+import { normalizeWatchFilename } from '../utils/watch-filename.util';
 
 @Injectable({ providedIn: 'root' })
 export class SyncService {
   private fileBridge = inject(FileBridgeService);
   private abortController: AbortController | null = null;
 
-  async startSync(): Promise<void> {
-    const playlist = syncPlaylist();
+  async startSync(trackIds?: string[]): Promise<void> {
+    const playlist = selectedPlaylist();
     if (!playlist) return;
 
-    const toSync = tracksToSync();
-    if (toSync.length === 0) return;
-
-    totalTracks.set(toSync.length);
-    completedTracks.set(0);
-    syncStatus.set('syncing');
-    syncError.set('');
-
-    this.abortController = new AbortController();
+    let toSync: Track[] = [];
 
     try {
+      toSync = this.resolveTracksForSync(tracks(), trackIds);
+      if (toSync.length === 0) return;
+
+      totalTracks.set(toSync.length);
+      completedTracks.set(0);
+      syncStatus.set('syncing');
+      syncError.set('');
+
+      this.abortController = new AbortController();
+
       const resp = await fetch('/api/sync/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           playlistId: playlist.id,
+          playlistName: playlist.name,
           trackIds: toSync.map(t => t.id),
+          tracks: toSync.map(t => ({
+            id: t.id,
+            title: t.title,
+            artist: t.artist,
+            album: t.album,
+            syncFilename: t.syncFilename,
+          })),
           existingFiles: existingFiles(),
         }),
         signal: this.abortController.signal,
@@ -73,12 +86,24 @@ export class SyncService {
     this.abortController?.abort();
   }
 
+
+  private resolveTracksForSync(sourceTracks: Track[], trackIds?: string[]) {
+    const ids = trackIds && trackIds.length > 0 ? new Set(trackIds) : null;
+    const existingNames = new Set(existingFiles().map(normalizeWatchFilename));
+    const pendingById = new Set(
+      sourceTracks
+        .filter(t => !existingNames.has(normalizeWatchFilename(t.syncFilename)))
+        .map(t => t.id)
+    );
+    return (ids ? sourceTracks.filter(t => ids.has(t.id)) : sourceTracks)
+      .filter(t => pendingById.has(t.id));
+  }
+
   private async parseMultipartStream(body: ReadableStream<Uint8Array>, boundary: string): Promise<void> {
     const reader = body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = new Uint8Array(0);
-    const boundaryBytes = new TextEncoder().encode('--' + boundary);
-    const endBoundaryBytes = new TextEncoder().encode('--' + boundary + '--');
+    let buffer: Uint8Array;
+    // Keep a 1:1 byte-to-char mapping while scanning multipart headers.
+    const latin1Decoder = new TextDecoder('latin1');
 
     // Read entire response and split by boundary
     // For simplicity, accumulate then split
@@ -98,52 +123,66 @@ export class SyncService {
       offset += chunk.length;
     }
 
-    const fullText = decoder.decode(buffer);
-    const parts = fullText.split('--' + boundary).filter(p => p.trim() !== '' && p.trim() !== '--');
+    const fullText = latin1Decoder.decode(buffer);
+    const marker = `--${boundary}`;
+    const markerWithCrlf = `\r\n${marker}`;
 
-    for (const part of parts) {
-      // Parse headers and body
-      const headerEnd = part.indexOf('\r\n\r\n');
-      if (headerEnd === -1) continue;
+    let boundaryStart = fullText.indexOf(marker);
+    while (boundaryStart !== -1) {
+      const afterMarker = boundaryStart + marker.length;
 
-      const headerSection = part.substring(0, headerEnd);
-      const bodyStart = headerEnd + 4;
+      // Closing boundary: --boundary--
+      if (fullText.startsWith('--', afterMarker)) {
+        break;
+      }
 
-      // Extract filename
-      const filenameMatch = headerSection.match(/filename="([^"]+)"/);
-      if (!filenameMatch) continue;
-      const filename = filenameMatch[1];
+      // Skip CRLF after boundary line
+      let headerStart = afterMarker;
+      if (fullText.startsWith('\r\n', headerStart)) {
+        headerStart += 2;
+      }
 
-      // Check for error header
+      const headerEnd = fullText.indexOf('\r\n\r\n', headerStart);
+      if (headerEnd === -1) break;
+
+      const nextBoundary = fullText.indexOf(markerWithCrlf, headerEnd + 4);
+      if (nextBoundary === -1) break;
+
+      const headerSection = fullText.slice(headerStart, headerEnd);
+      const filename = parseContentDispositionFilename(headerSection);
+      if (!filename) {
+        boundaryStart = nextBoundary + 2; // skip leading CRLF
+        continue;
+      }
+
       const errorMatch = headerSection.match(/X-Track-Error:\s*(.+)/i);
       if (errorMatch) {
         completedTracks.update(n => n + 1);
+        boundaryStart = nextBoundary + 2;
         continue;
       }
 
       currentTrackName.set(filename.replace('.mp3', ''));
 
-      // Get body bytes (re-encode from the original buffer)
-      const bodyText = part.substring(bodyStart);
-      // We need the raw bytes, so find this part in the original buffer
-      const partStart = fullText.indexOf(part);
-      const bodyBytes = buffer.slice(
-        new TextEncoder().encode(fullText.substring(0, partStart + bodyStart)).length,
-        new TextEncoder().encode(fullText.substring(0, partStart + bodyStart + bodyText.length)).length
-      );
+      const bodyStart = headerEnd + 4;
+      const bodyBytes = buffer.slice(bodyStart, nextBoundary); // boundary begins at CRLF before marker
 
-      try {
-        await this.fileBridge.writeTrack(filename, bodyBytes);
-      } catch (err: any) {
-        if (err.name === 'NotFoundError') {
-          syncError.set('Watch disconnected during sync');
-          syncStatus.set('error');
-          return;
+      // Ignore empty payloads instead of writing corrupt 0-byte files.
+      if (bodyBytes.length > 0) {
+        try {
+          await this.fileBridge.writeTrack(filename, bodyBytes);
+        } catch (err: any) {
+          if (err.name === 'NotFoundError') {
+            syncError.set('Watch disconnected during sync');
+            syncStatus.set('error');
+            return;
+          }
+          // Skip track on other write errors
         }
-        // Skip track on other write errors
       }
 
       completedTracks.update(n => n + 1);
+      boundaryStart = nextBoundary + 2;
     }
   }
 }

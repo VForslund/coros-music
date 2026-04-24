@@ -1,17 +1,15 @@
 import { signal, computed } from '@angular/core';
 import { Playlist } from '../models/playlist.model';
 import { Track } from '../models/track.model';
+import { normalizeWatchFilename } from '../utils/watch-filename.util';
 
 const PLAYLISTS_STORAGE_KEY = 'coros.playlists.v1';
 const SELECTED_PLAYLIST_ID_KEY = 'coros.selectedPlaylistId.v1';
-const SYNC_PLAYLIST_ID_KEY = 'coros.syncPlaylistId.v1';
 
 // --- Core Signals ---
 export const spotifyConnected = signal(false);
 export const playlists = signal<Playlist[]>([]);
 export const selectedPlaylist = signal<Playlist | null>(null);
-// Sync target can be overridden independently from current viewing selection.
-export const syncPlaylist = signal<Playlist | null>(null);
 export const tracks = signal<Track[]>([]);
 
 // Sync progress
@@ -31,36 +29,33 @@ export const progress = computed(() =>
   totalTracks() === 0 ? 0 : Math.round((completedTracks() / totalTracks()) * 100)
 );
 export const tracksToSync = computed(() => {
-  const existing = new Set(existingFiles().map(f => f.split(' —')[0]));
-  return tracks().filter(t => !existing.has(t.id));
+  const existing = new Set(existingFiles().map(normalizeWatchFilename));
+  return tracks().filter(t => !existing.has(normalizeWatchFilename(t.syncFilename)));
 });
 export const tracksSynced = computed(() => {
-  const existing = new Set(existingFiles().map(f => f.split(' —')[0]));
-  return tracks().filter(t => existing.has(t.id));
+  const existing = new Set(existingFiles().map(normalizeWatchFilename));
+  return tracks().filter(t => existing.has(normalizeWatchFilename(t.syncFilename)));
 });
 
 export function persistPlaylistState(): void {
   if (typeof localStorage === 'undefined') return;
   localStorage.setItem(PLAYLISTS_STORAGE_KEY, JSON.stringify(playlists()));
   localStorage.setItem(SELECTED_PLAYLIST_ID_KEY, selectedPlaylist()?.id ?? '');
-  localStorage.setItem(SYNC_PLAYLIST_ID_KEY, syncPlaylist()?.id ?? '');
 }
 
 export function hydratePlaylistState(): {
   persistedPlaylists: Playlist[];
   selectedId: string | null;
-  syncId: string | null;
 } {
   if (typeof localStorage === 'undefined') {
-    return { persistedPlaylists: [], selectedId: null, syncId: null };
+    return { persistedPlaylists: [], selectedId: null };
   }
 
   try {
     const persistedPlaylists = JSON.parse(localStorage.getItem(PLAYLISTS_STORAGE_KEY) ?? '[]') as Playlist[];
     const selectedId = localStorage.getItem(SELECTED_PLAYLIST_ID_KEY) || null;
-    const syncId = localStorage.getItem(SYNC_PLAYLIST_ID_KEY) || null;
-    return { persistedPlaylists, selectedId, syncId };
+    return { persistedPlaylists, selectedId };
   } catch {
-    return { persistedPlaylists: [], selectedId: null, syncId: null };
+    return { persistedPlaylists: [], selectedId: null };
   }
 }

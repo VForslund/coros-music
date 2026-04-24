@@ -38,7 +38,14 @@
         <div class="flex justify-between items-center text-sm mb-3">
           <span class="text-gray-300 font-medium truncate mr-4">
             @if (syncStatus() === 'syncing') {
-              {{ currentTrackName() }}
+              <span class="inline-flex max-w-full items-center gap-2.5 align-middle">
+                <span class="truncate">{{ 'Syncing' }}</span>
+                <span class="inline-flex items-center gap-1 text-coros/90" aria-hidden="true">
+                  <span class="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:0ms] [animation-duration:1s]"></span>
+                  <span class="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:150ms] [animation-duration:1s]"></span>
+                  <span class="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:300ms] [animation-duration:1s]"></span>
+                </span>
+              </span>
             } @else {
               <span class="text-sync font-semibold">✓ Sync complete</span>
             }
@@ -48,12 +55,17 @@
         <div class="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
           <div
             class="h-full rounded-full transition-all duration-500 ease-out"
-            [class]="syncStatus() === 'done' ? 'bg-sync' : 'bg-coros'"
+            [class.bg-orange-500]="syncStatus() !== 'done'"
+            [class.bg-emerald-500]="syncStatus() === 'done'"
             [style.width.%]="progress()"
           ></div>
         </div>
         <div class="text-right mt-2">
-          <span class="text-xs font-bold tabular-nums" [class]="syncStatus() === 'done' ? 'text-sync' : 'text-coros'">{{ progress() }}%</span>
+          <span
+            class="text-xs font-bold tabular-nums"
+            [class.text-orange-400]="syncStatus() !== 'done'"
+            [class.text-emerald-400]="syncStatus() === 'done'"
+          >{{ progress() }}%</span>
         </div>
       </div>
     }
@@ -67,13 +79,8 @@
       </div>
     }
 
-    <!-- Sync button -->
+    <!-- Sync actions -->
     <div class="mb-8">
-      @if (syncPlaylist()) {
-        <div class="mb-3 text-xs text-zinc-400">
-          Sync target: <span class="text-orange-300 font-semibold">{{ syncPlaylist()!.name }}</span>
-        </div>
-      }
       @if (syncStatus() === 'syncing') {
         <button
           (click)="cancel()"
@@ -86,7 +93,7 @@
         </button>
       } @else {
         <button
-          (click)="sync()"
+          (click)="syncAllPending()"
           [disabled]="!watchConnected() || tracksToSync().length === 0"
           class="px-8 py-3 rounded-xl font-bold text-sm uppercase tracking-wide transition-all disabled:opacity-30 disabled:cursor-not-allowed disabled:shadow-none"
           [class]="watchConnected() && tracksToSync().length > 0
@@ -98,10 +105,65 @@
             Sync {{ tracksToSync().length }} Tracks
           </span>
         </button>
+        <button
+          (click)="syncSelected()"
+          [disabled]="!canSyncSelected()"
+          class="ml-3 px-5 py-3 rounded-xl font-bold text-sm uppercase tracking-wide transition-all disabled:opacity-30 disabled:cursor-not-allowed bg-gray-800 hover:bg-gray-700 text-gray-200"
+        >Sync Selected ({{ selectedPendingTrackCount() }})</button>
         @if (!watchConnected() && tracksToSync().length > 0) {
           <span class="ml-4 text-xs text-gray-500 font-medium">Connect your watch to start</span>
         }
       }
+    </div>
+
+    @if (actionError()) {
+      <div class="mb-6 p-3 rounded-xl bg-red-950/40 border border-red-800/30 text-sm text-red-300">{{ actionError() }}</div>
+    }
+
+    <!-- Watch songs -->
+    <div class="mb-8 p-4 rounded-2xl bg-gray-900/60 border border-gray-800/50">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-bold text-gray-200">Songs on Watch</h3>
+        <div class="text-sm text-gray-200">{{ existingFiles().length }} files</div>
+      </div>
+      @if (!watchConnected()) {
+        <div class="text-sm text-gray-500">Connect watch to view and remove songs.</div>
+      } @else if (existingFiles().length === 0) {
+        <div class="text-sm text-gray-500">No songs found in /Music.</div>
+      } @else {
+        <div class="mb-3 flex items-center gap-2">
+          <button
+            (click)="removeSelectedWatchTracks()"
+            [disabled]="selectedWatchCount() === 0"
+            class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-700 hover:bg-red-600 text-white disabled:opacity-30"
+          >Remove Selected ({{ selectedWatchCount() }})</button>
+        </div>
+        <div class="max-h-52 overflow-y-auto space-y-1">
+          @for (name of existingFiles(); track name) {
+            <div class="flex items-center gap-3 px-2 py-1.5 rounded hover:bg-gray-800/70">
+              <input
+                type="checkbox"
+                [checked]="selectedWatchFiles().has(name)"
+                (change)="toggleWatchFile(name)"
+                class="accent-coros"
+              />
+              <div class="flex-1 min-w-0 text-sm text-gray-300 truncate">{{ watchLabel(name) }}</div>
+              <button
+                (click)="removeSingleWatchTrack(name)"
+                class="text-xs px-2 py-1 rounded bg-red-500/15 text-red-300 hover:bg-red-500/25"
+              >Remove</button>
+            </div>
+          }
+        </div>
+      }
+    </div>
+
+    <div class="mb-5 flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+      <span>{{ selectedTrackCount() }} selected</span>
+      <span>·</span>
+      <span>{{ selectedPendingTrackCount() }} ready to sync</span>
+      <button (click)="selectAllTracks()" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300">Select all</button>
+      <button (click)="clearTrackSelection()" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300">Clear</button>
     </div>
 
     <!-- Track list -->
@@ -111,6 +173,12 @@
           class="flex items-center gap-3 px-4 py-3 rounded-xl transition-colors"
           [class]="isSynced(t.id) ? 'opacity-50' : 'hover:bg-gray-900/60'"
         >
+          <input
+            type="checkbox"
+            [checked]="selectedTrackIds().has(t.id)"
+            (change)="toggleTrack(t.id)"
+            class="accent-coros"
+          />
           <!-- Track number / sync indicator -->
           <div class="w-6 text-center shrink-0">
             @if (isSynced(t.id)) {

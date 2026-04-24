@@ -1,6 +1,6 @@
 import { Component, inject, signal } from '@angular/core';
 import { SpotifyService } from '../../core/services/spotify.service';
-import { playlists, selectedPlaylist, syncPlaylist } from '../../core/state/sync.state';
+import { playlists, selectedPlaylist } from '../../core/state/sync.state';
 import { Playlist } from '../../core/models/playlist.model';
 
 @Component({
@@ -11,7 +11,6 @@ export class PlaylistPickerComponent {
   private spotify = inject(SpotifyService);
   protected playlists = playlists;
   protected selectedPlaylist = selectedPlaylist;
-  protected syncPlaylist = syncPlaylist;
   protected playlistInput = signal('');
   protected loading = signal(false);
   protected error = signal('');
@@ -35,10 +34,6 @@ export class PlaylistPickerComponent {
     await this.spotify.selectPlaylist(playlist);
   }
 
-  setSyncTarget(playlist: Playlist, event: Event): void {
-    event.stopPropagation();
-    this.spotify.setSyncPlaylist(playlist);
-  }
 
   remove(id: string, event: Event): void {
     event.stopPropagation();

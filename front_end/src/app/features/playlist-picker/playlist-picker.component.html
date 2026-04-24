@@ -63,18 +63,10 @@
             }
             <div class="min-w-0 flex-1">
               <div class="font-semibold text-sm truncate" [class]="p.id === selectedPlaylist()?.id ? 'text-coros-light' : ''">{{ p.name }}</div>
-              <div class="text-[11px] text-gray-500 mt-0.5 flex items-center gap-2">
+              <div class="text-[11px] text-gray-500 mt-0.5">
                 <span>{{ p.trackCount }} tracks</span>
-                @if (syncPlaylist()?.id === p.id) {
-                  <span class="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-semibold uppercase text-[9px] tracking-wide">Sync Target</span>
-                }
               </div>
             </div>
-            <button
-              (click)="setSyncTarget(p, $event)"
-              class="opacity-0 group-hover:opacity-100 text-[10px] px-2 py-1 rounded-md bg-orange-500/15 text-orange-300 hover:bg-orange-500/25 transition-all"
-              title="Use this playlist for sync"
-            >Sync</button>
             <button
               (click)="remove(p.id, $event)"
               class="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400 transition-all p-1 rounded-lg hover:bg-red-400/10"

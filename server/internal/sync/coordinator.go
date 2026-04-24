@@ -3,6 +3,7 @@ package sync
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -25,10 +26,10 @@ type Job struct {
 
 // Result holds the output of a completed job.
 type Result struct {
-	Job      Job
-	Data     []byte
-	Error    error
-	Index    int
+	Job   Job
+	Data  []byte
+	Error error
+	Index int
 }
 
 type Coordinator struct {
@@ -47,6 +48,7 @@ func NewCoordinator() *Coordinator {
 
 type syncRequest struct {
 	PlaylistID    string   `json:"playlistId"`
+	PlaylistName  string   `json:"playlistName"`
 	TrackIDs      []string `json:"trackIds"`
 	ExistingFiles []string `json:"existingFiles"`
 	// Optional: track metadata for search queries
@@ -59,22 +61,12 @@ type syncRequest struct {
 	} `json:"tracks,omitempty"`
 }
 
-func (c *Coordinator) HandleStream(w http.ResponseWriter, r *http.Request) {
-	var req syncRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
+func buildJobs(req syncRequest) ([]Job, error) {
 	if len(req.TrackIDs) == 0 {
-		http.Error(w, "no tracks to sync", http.StatusBadRequest)
-		return
+		return nil, fmt.Errorf("no tracks provided")
 	}
 
-	ctx := r.Context()
-
-	// Build jobs from the tracks metadata
-	jobs := make([]Job, 0, len(req.Tracks))
+	jobs := make([]Job, 0, len(req.TrackIDs))
 	trackMap := make(map[string]struct{})
 	for _, id := range req.TrackIDs {
 		trackMap[id] = struct{}{}
@@ -94,7 +86,6 @@ func (c *Coordinator) HandleStream(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// If no track metadata provided, create minimal jobs
 	if len(jobs) == 0 {
 		for _, id := range req.TrackIDs {
 			jobs = append(jobs, Job{
@@ -104,6 +95,24 @@ func (c *Coordinator) HandleStream(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+
+	return jobs, nil
+}
+
+func (c *Coordinator) HandleStream(w http.ResponseWriter, r *http.Request) {
+	var req syncRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	jobs, err := buildJobs(req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
 
 	total := len(jobs)
 	mw := stream.NewWriter(w, total)
@@ -124,6 +133,12 @@ func (c *Coordinator) HandleStream(w http.ResponseWriter, r *http.Request) {
 			err := pipeline.Transcode(ctx, j.Query, &buf)
 
 			var data []byte
+			if err == nil {
+				if buf.Len() == 0 {
+					err = fmt.Errorf("empty audio output")
+				}
+			}
+
 			if err == nil {
 				// Tag the MP3
 				tagged, tagErr := pipeline.TagMP3(buf.Bytes(), j.Title, j.Artist, j.Album)
@@ -171,4 +186,3 @@ func (c *Coordinator) HandleStream(w http.ResponseWriter, r *http.Request) {
 		log.Printf("failed to close multipart: %v", err)
 	}
 }
-

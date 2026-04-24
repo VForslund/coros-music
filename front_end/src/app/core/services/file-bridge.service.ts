@@ -38,7 +38,24 @@ export class FileBridgeService {
     for await (const [name] of (music as any).entries()) {
       if (name.endsWith('.mp3')) names.push(name);
     }
-    existingFiles.set(names);
+    existingFiles.set(names.sort((a, b) => a.localeCompare(b)));
+  }
+
+  /** Remove one or more MP3 files from /Music. */
+  async removeTracks(filenames: string[]): Promise<void> {
+    const root = watchDirHandle();
+    if (!root || filenames.length === 0) return;
+
+    const music = await root.getDirectoryHandle('Music');
+    for (const name of filenames) {
+      try {
+        await (music as any).removeEntry(name);
+      } catch {
+        // Ignore missing files or races and continue.
+      }
+    }
+
+    await this.scanExistingFiles();
   }
 
   /** Write a single MP3 blob to the watch. */

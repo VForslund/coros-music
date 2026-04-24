@@ -1,7 +1,7 @@
 # AGENT.md — CorosMusic
 
-> **Spotify → COROS Pace 4 Watch** sync tool. Go backend for audio pipeline, Angular 21 frontend for UI & hardware writes.
-> **Note**: All CLI tools run by this agent should be executed in the `fish` shell.
+> **Spotify → COROS watch sync tool.** Go backend for Spotify metadata + audio pipeline, Angular 21 frontend for UI and writing/removing files on the watch.
+> **Shell**: use `bash` as a prefix for commands. Unless a file in the repo explicitly requires something else.
 
 ---
 
@@ -9,47 +9,49 @@
 
 ```mermaid
 graph LR
-    A[Spotify API] -->|Client Credentials / Playlist metadata| B[Go Backend]
+    A[Spotify API] -->|Client Credentials / public playlist metadata| B[Go Backend]
     B -->|Track search| C[yt-dlp]
-    C -->|Raw audio stream| D[FFmpeg]
-    D -->|320 kbps MP3 + ID3 tags| E[Buffered Stream]
-    E -->|Chunked Transfer-Encoding| F[Angular 21 UI<br/>Signals State]
-    F -->|Web File System Access API| G[COROS Pace 4<br/>/Music directory]
+    C -->|Audio input| D[FFmpeg]
+    D -->|Tagged MP3 stream| E[Multipart HTTP stream]
+    E -->|HTTPS /api/sync/stream| F[Angular 21 UI<br/>Signals State]
+    F -->|File System Access API| G[COROS Watch<br/>/Music directory]
 ```
 
 ---
 
 ## Project Structure
 
-```
+```text
 coros_music/
 ├── AGENT.md
 ├── README.md
 ├── Dockerfile
 ├── docker-compose.yml
-├── .env                          # SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET
-├── server/                       # Go backend
+├── coros-data/                    # Local persisted TLS certs during dev (cert.pem/key.pem)
+├── server/
 │   ├── cmd/
 │   │   └── coros-music/
-│   │       └── main.go           # Entrypoint, HTTP server (plain HTTP)
+│   │       └── main.go            # HTTPS server, static serving, self-signed cert generation
 │   ├── internal/
-│   │   ├── spotify/
-│   │   │   ├── auth.go           # Client Credentials flow via zmb3/spotify/v2
-│   │   │   └── playlists.go      # Filename sanitization
+│   │   ├── httpx/
+│   │   │   └── content_disposition.go
 │   │   ├── pipeline/
-│   │   │   ├── resolver.go       # yt-dlp search via exec.Command
-│   │   │   ├── transcoder.go     # FFmpeg 320 kbps pipe
-│   │   │   └── tagger.go         # ID3 tagging via FFmpeg metadata
+│   │   │   ├── resolver.go        # yt-dlp-assisted media resolution
+│   │   │   ├── transcoder.go      # FFmpeg MP3 transcoding pipeline
+│   │   │   └── tagger.go          # MP3 tagging
+│   │   ├── spotify/
+│   │   │   ├── auth.go            # Spotify client-credentials access to public playlists
+│   │   │   └── playlists.go       # Filesystem-safe sync filename generation
 │   │   ├── stream/
-│   │   │   └── chunked.go        # Multipart HTTP response writer
+│   │   │   └── chunked.go         # multipart/mixed streaming writer
 │   │   └── sync/
-│   │       └── coordinator.go    # Goroutine pool, job channels
+│   │       └── coordinator.go     # Worker pool + ordered multipart write-out
 │   ├── go.mod
 │   └── go.sum
-└── front_end/                    # Angular 21 frontend
+└── front_end/
     ├── angular.json
     ├── package.json
-    ├── proxy.conf.json
+    ├── proxy.conf.json            # Proxies /api to https://localhost:8080 with secure=false
     ├── tsconfig.json
     ├── tsconfig.app.json
     ├── tsconfig.spec.json
@@ -58,22 +60,27 @@ coros_music/
     └── src/
         ├── index.html
         ├── main.ts
-        ├── styles.css            # Tailwind v4 + COROS theme
+        ├── styles.css
         └── app/
             ├── app.ts
             ├── app.routes.ts
-            ├── app.config.ts     # provideHttpClient, provideRouter
+            ├── app.config.ts
             ├── core/
             │   ├── models/
             │   │   ├── playlist.model.ts
             │   │   └── track.model.ts
+            │   ├── services/
+            │   │   ├── file-bridge.service.ts   # Connect watch, scan files, remove files, write files
+            │   │   ├── spotify.service.ts       # Playlist URL/ID workflows
+            │   │   ├── sync.service.ts          # Sync target resolution + multipart parser
+            │   │   └── watch-health.service.ts
             │   ├── state/
-            │   │   └── sync.state.ts         # All Signals for app state
-            │   └── services/
-            │       ├── spotify.service.ts     # HTTP calls to /api/spotify/*
-            │       ├── sync.service.ts        # Fetch + multipart stream parser
-            │       ├── file-bridge.service.ts # Web File System Access API
-            │       └── watch-health.service.ts
+            │   │   └── sync.state.ts            # Angular signals for playlists/watch/sync state
+            │   └── utils/
+            │       ├── content-disposition.util.ts
+            │       ├── content-disposition.util.spec.ts
+            │       ├── watch-filename.util.ts
+            │       └── watch-filename.util.spec.ts
             └── features/
                 ├── dashboard/
                 │   ├── dashboard.component.ts
@@ -88,140 +95,217 @@ coros_music/
 
 ---
 
-## Go Backend Specifications
+## Backend Overview
 
-### Spotify Auth: Client Credentials Flow
+### Spotify access model
 
-No user login, no redirect URI, no consent screen. The backend authenticates with `SPOTIFY_CLIENT_ID` + `SPOTIFY_CLIENT_SECRET` using the Client Credentials grant. This gives access to any **public** Spotify playlist.
+The backend uses **Spotify Client Credentials** (`SPOTIFY_CLIENT_ID` + `SPOTIFY_CLIENT_SECRET`).
 
-### Key Libraries
+- No user Spotify login
+- No redirect URI handling
+- No refresh-token persistence
+- Only **public** playlist access is supported
 
-| Dependency | Purpose |
+### HTTPS behavior
+
+The Go server runs over **HTTPS**, not plain HTTP.
+
+- On startup, `server/cmd/coros-music/main.go` ensures `cert.pem` + `key.pem` exist
+- If missing or invalid, it generates self-signed certs automatically
+- Certs are persisted under `COROS_DATA_DIR` when set
+- Fallback data dir behavior:
+  - `COROS_DATA_DIR` if provided
+  - `/root/.coros-music` in Docker if present
+  - `coros-data` locally otherwise
+
+### Key backend packages
+
+| Package | Purpose |
 |---|---|
-| `github.com/zmb3/spotify/v2` | Spotify Web API client (Client Credentials, playlists, tracks) |
-| `golang.org/x/oauth2` | OAuth2 client credentials transport |
+| `internal/spotify` | Spotify metadata access and track filename generation |
+| `internal/pipeline` | yt-dlp + FFmpeg resolution, transcoding, tagging |
+| `internal/sync` | Worker pool, ordered job processing, request handling |
+| `internal/stream` | Multipart chunked response writer |
+| `internal/httpx` | `Content-Disposition` formatting helpers |
 
-Audio pipeline uses `exec.Command` to call `yt-dlp` and `ffmpeg` directly (no Go bindings).
+### Sync concurrency model
 
-### Concurrency Model
+- Worker count defaults to `4` and can be overridden by `COROS_WORKERS`
+- Each selected track is transcoded in its own goroutine
+- Results are buffered and written back to the client **in original order**
+- Request `context.Context` is propagated so disconnect/cancel stops work
 
-```
-               ┌─── goroutine: resolve(track) ──► yt-dlp search
-               │
-Coordinator ───┼─── goroutine: resolve(track) ──► yt-dlp search
-  (buffered    │
-   chan Job)   └─── goroutine: resolve(track) ──► yt-dlp search
-                        │
-                        ▼
-                  chan AudioResult
-                        │
-                  ┌─────┴─────┐
-                  │ transcode  │  FFmpeg stdin→stdout pipe
-                  │ + tag      │  FFmpeg metadata flags for ID3
-                  └─────┬─────┘
-                        │
-                  Chunked HTTP Response
-```
+---
 
-- **Worker pool**: Configurable concurrency (default `COROS_WORKERS=4`).
-- **Backpressure**: Workers buffer to `bytes.Buffer`, then results are written in order.
-- **Cancellation**: All goroutines accept `context.Context` from the HTTP request.
-
-### API Endpoints
+## API Endpoints
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/spotify/status` | Returns `{"authenticated":true}` |
-| `GET` | `/api/spotify/playlists?userId=X` | Returns public playlists for a user |
-| `GET` | `/api/spotify/playlists/{id}` | Returns a single playlist metadata |
-| `GET` | `/api/spotify/playlists/{id}/tracks` | Returns tracks `[{id, title, artist, album, durationMs, syncFilename}]` |
-| `POST` | `/api/sync/stream` | Streams MP3s as multipart chunked response |
-| `GET` | `/api/health` | Backend readiness (FFmpeg + yt-dlp binary check) |
+| `GET` | `/api/spotify/status` | Returns backend Spotify availability (`{"authenticated":true}` in current implementation) |
+| `GET` | `/api/spotify/playlists?userId=X` | Returns public playlists for a user; without `userId` it returns `[]` |
+| `GET` | `/api/spotify/playlists/{id}` | Returns playlist metadata for a public playlist |
+| `GET` | `/api/spotify/playlists/{id}/tracks` | Returns normalized track metadata including `syncFilename` |
+| `POST` | `/api/sync/stream` | Streams selected MP3s as `multipart/mixed` |
+| `GET` | `/api/health` | Returns JSON health for `ffmpeg`, `yt-dlp`, and Spotify backend availability |
 
-#### `/api/sync/stream` Response Format
+### `/api/sync/stream` request body
 
+```json
+{
+  "playlistId": "spotify-playlist-id",
+  "playlistName": "Playlist name",
+  "trackIds": ["track-id-1", "track-id-2"],
+  "existingFiles": ["Artist - Title.mp3"],
+  "tracks": [
+    {
+      "id": "track-id-1",
+      "title": "Song Title",
+      "artist": "Artist",
+      "album": "Album",
+      "syncFilename": "Artist - Song Title.mp3"
+    }
+  ]
+}
 ```
+
+### `/api/sync/stream` response format
+
+```http
 HTTP/1.1 200 OK
 Content-Type: multipart/mixed; boundary=corospart
 Transfer-Encoding: chunked
 
 --corospart
-Content-Disposition: attachment; filename="3kVUbTB8m6uw — Song Title.mp3"
+Content-Disposition: attachment; filename="Artist - Song Title.mp3"
 X-Track-Index: 1
-X-Track-Total: 12
+X-Track-Total: 2
 
 <raw MP3 bytes>
 --corospart
-Content-Disposition: attachment; filename="7xGfFoTpQ2E — Another Song.mp3"
+Content-Disposition: attachment; filename="Artist - Another Song.mp3"
 X-Track-Index: 2
-X-Track-Total: 12
+X-Track-Total: 2
+X-Track-Error: transcode failed
 
-<raw MP3 bytes>
 --corospart--
 ```
 
-### Environment Variables
+Notes:
 
-| Variable | Default | Description |
-|---|---|---|
-| `COROS_PORT` | `8080` | HTTP listen port |
-| `SPOTIFY_CLIENT_ID` | — | Spotify app client ID |
-| `SPOTIFY_CLIENT_SECRET` | — | Spotify app client secret |
-| `COROS_WORKERS` | `4` | Concurrent download/transcode goroutines |
-| `COROS_FFMPEG_PATH` | `ffmpeg` | Path to FFmpeg binary |
-| `COROS_YTDLP_PATH` | `yt-dlp` | Path to yt-dlp binary |
+- Successful parts contain MP3 bytes
+- Failed parts may include `X-Track-Error`
+- The frontend parses this stream and writes successful tracks to the watch
 
 ---
 
-## Angular 21 Frontend Specifications
+## Frontend Overview
 
-### Playlist Input (No Login Required)
+### Playlist workflow
 
-Users paste a Spotify playlist URL or ID directly. The frontend extracts the playlist ID and fetches metadata + tracks via the backend. No OAuth consent screen, no redirect URI.
+The Angular app does **not** authenticate the Spotify user.
 
-### Signal-Based State (`sync.state.ts`)
+Current UX:
 
-```typescript
-export const spotifyConnected = signal(false);
-export const playlists        = signal<Playlist[]>([]);
-export const selectedPlaylist = signal<Playlist | null>(null);
-export const tracks           = signal<Track[]>([]);
-export const totalTracks      = signal(0);
-export const completedTracks  = signal(0);
-export const currentTrackName = signal('');
-export const syncStatus       = signal<'idle' | 'syncing' | 'done' | 'error'>('idle');
-export const syncError        = signal('');
-export const watchDirHandle   = signal<FileSystemDirectoryHandle | null>(null);
-export const watchConnected   = computed(() => watchDirHandle() !== null);
-export const existingFiles    = signal<string[]>([]);
-export const progress         = computed(() => /* percentage */);
-export const tracksToSync     = computed(() => /* delta by track ID prefix */);
-export const tracksSynced     = computed(() => /* already on watch */);
+1. User pastes a Spotify playlist URL or playlist ID
+2. Frontend extracts the playlist ID
+3. Backend loads metadata/tracks for that public playlist
+4. Playlist is stored locally in frontend state/localStorage
+
+### State model
+
+Important signals in `front_end/src/app/core/state/sync.state.ts`:
+
+- `playlists`
+- `selectedPlaylist`
+- `syncPlaylist`  ← can differ from current viewed playlist
+- `tracks`
+- `existingFiles`
+- `syncStatus`
+- `progress`
+- `tracksToSync`
+- `tracksSynced`
+
+`selectedPlaylist` controls what is currently shown in the UI.
+
+`syncPlaylist` controls what the sync action targets.
+
+### Watch integration
+
+`FileBridgeService` is responsible for:
+
+- prompting for a directory using the File System Access API
+- verifying that `/Music` exists
+- scanning current `.mp3` files on the watch
+- writing synced MP3 files
+- removing selected files from the watch
+
+### Current sync UX
+
+The `sync-progress` feature currently supports:
+
+- syncing all pending tracks for the sync target
+- syncing only selected tracks
+- cancelling an in-flight sync
+- listing songs already on the watch
+- removing individual or selected songs from the watch
+
+There is currently **no playlist ZIP download flow**.
+
+---
+
+## Filename & Delta-Sync Rules
+
+### Current filename convention
+
+New synced files are named like:
+
+```text
+Artist - Title.mp3
 ```
 
-### UI / UX — COROS Sport-Mode Dashboard
+The raw Spotify track ID is **not** included in new filenames.
 
-Built with **Tailwind CSS v4+**, standalone components, COROS-inspired dark theme with red-orange brand accent.
+### Legacy compatibility
 
-- **Header**: Logo + Watch connect button (COROS red-orange accent)
-- **Sidebar**: Playlist URL input + playlist list with album art
-- **Main area**: Track list with sync status, progress bar, sync button
-- **Footer**: Compact status bar (watch, file count, API health)
-- **Empty states**: SVG icons, helpful prompts
+Older files may still look like:
 
-### Delta Sync Algorithm
-
-```
-1. User pastes playlist URL → frontend extracts ID, fetches tracks via /api/spotify/playlists/:id/tracks
-2. FileBridge scans watch /Music → existingFiles signal populated
-3. tracksToSync = computed(tracks NOT in existingFiles)  // by Spotify track ID prefix in filename
-4. UI shows synced tracks as checked/greyed
-5. POST /api/sync/stream sends only delta trackIds
-6. Backend resolves & streams only missing tracks
-7. After sync, FileBridge re-scans watch
+```text
+4NPeA5XXs6tjHrtanLYJxf — Artist - Title.mp3
 ```
 
-**Filename convention**: `{SpotifyTrackID} — {Artist} - {Title}.mp3`
+The frontend normalizes these via `watch-filename.util.ts`, stripping the old prefix so both old and new filenames match the same track for sync purposes.
+
+### Delta sync logic
+
+High level flow:
+
+1. Playlist tracks come from `/api/spotify/playlists/{id}/tracks`
+2. Watch `/Music` files are scanned into `existingFiles`
+3. Filenames are normalized on the frontend
+4. `tracksToSync` and `tracksSynced` compare normalized watch filenames against each track's `syncFilename`
+5. `SyncService` sends only missing tracks to `/api/sync/stream`
+6. After sync, watch files are scanned again
+
+Important implication:
+
+- same **title** with different **artists** is fine
+- collision risk exists only if multiple tracks resolve to the exact same sanitized `Artist - Title.mp3`
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `COROS_PORT` | `8080` | HTTPS listen port |
+| `COROS_DATA_DIR` | auto | Directory for persisted TLS certs/data |
+| `SPOTIFY_CLIENT_ID` | — | Spotify app client ID |
+| `SPOTIFY_CLIENT_SECRET` | — | Spotify app client secret |
+| `COROS_WORKERS` | `4` | Concurrent transcode workers |
+| `COROS_FFMPEG_PATH` | `ffmpeg` | Path to FFmpeg binary |
+| `COROS_YTDLP_PATH` | `yt-dlp` | Path to yt-dlp binary |
+| `COROS_AUDIO_ENCODER` | auto | Optional FFmpeg encoder override |
+| `COROS_STATIC_DIR` | unset | Directory to serve built frontend from |
 
 ---
 
@@ -232,34 +316,52 @@ Built with **Tailwind CSS v4+**, standalone components, COROS-inspired dark them
 - Go 1.23+
 - Node.js 22+
 - Angular CLI 21.x
-- FFmpeg (system)
-- yt-dlp (system)
+- FFmpeg
+- yt-dlp
 
-### Run Locally
+### Local development
 
 ```bash
-# Backend
-cd server && go run ./cmd/coros-music
+# backend
+cd /home/victor/me/coros_music/server
+go run ./cmd/coros-music
 
-# Frontend (separate terminal)
-cd front_end && npm install && npx ng serve --proxy-config proxy.conf.json
+# frontend
+cd /home/victor/me/coros_music/front_end
+npm install
+npx ng serve --proxy-config proxy.conf.json
 ```
+
+Notes:
+
+- frontend proxy target is `https://localhost:8080`
+- proxy uses `"secure": false` because the backend cert is self-signed
 
 ### Docker
 
 ```bash
+cd /home/victor/me/coros_music
 docker compose up --build
 ```
-
-The `Dockerfile` builds Go backend, Angular frontend, and bundles with ffmpeg + yt-dlp in an Alpine runtime image.
 
 ---
 
 ## Coding Conventions
 
-- **Go**: Standard library style. `internal/` for non-exported packages. Errors wrapped with `fmt.Errorf("context: %w", err)`.
-- **Angular**: Standalone components only. No `NgModule`. Signals over RxJS where possible. Inject via `inject()` function. Separate `.html` template files.
-- **CSS**: Tailwind v4+ utility-first. Custom COROS theme tokens in `front_end/src/styles.css` via `@theme`.
-- **Filenames**: kebab-case everywhere. Go files: `snake_case.go`.
-- **Tests**: Go table-driven tests. Angular uses Vitest (per `angular.json`).
+- **Go**: standard library style, `internal/` for non-exported packages, wrap errors with context where useful
+- **Angular**: standalone components, signals-first state, `inject()` for DI, dedicated `.html` templates
+- **Frontend state**: keep displayed playlist (`selectedPlaylist`) distinct from actual sync target (`syncPlaylist`)
+- **Tailwind**: utility-first styling in `front_end/src/styles.css`
+- **Tests**:
+  - Go: table-driven tests where practical
+  - Frontend: Vitest-style specs in `src/app/core/utils/*.spec.ts`
 
+## Things likely to be stale first
+
+If behavior changes, re-check these areas before trusting this document:
+
+- endpoint list in `server/cmd/coros-music/main.go`
+- sync filename logic in `server/internal/spotify/playlists.go`
+- frontend matching rules in `front_end/src/app/core/state/sync.state.ts`
+- sync target behavior in `front_end/src/app/core/services/sync.service.ts`
+- watch management UI in `front_end/src/app/features/sync-progress/`

@@ -7,7 +7,6 @@ import {
   playlists,
   tracks,
   selectedPlaylist,
-  syncPlaylist,
   spotifyConnected,
   hydratePlaylistState,
   persistPlaylistState,
@@ -31,17 +30,14 @@ export class SpotifyService {
     }
   }
 
-  /** Restore persisted playlist list + selected sync target after refresh. */
+  /** Restore persisted playlist list + current selection after refresh. */
   async restoreFromStorage(): Promise<void> {
-    const { persistedPlaylists, selectedId, syncId } = hydratePlaylistState();
+    const { persistedPlaylists, selectedId } = hydratePlaylistState();
     if (persistedPlaylists.length === 0) return;
 
     playlists.set(persistedPlaylists);
 
     const selected = persistedPlaylists.find(p => p.id === selectedId) ?? persistedPlaylists[0];
-    const syncTarget = persistedPlaylists.find(p => p.id === syncId) ?? selected;
-
-    syncPlaylist.set(syncTarget);
     await this.selectPlaylist(selected, { persist: false });
   }
 
@@ -74,8 +70,7 @@ export class SpotifyService {
         playlists.set([...current, playlist]);
       }
 
-      // Auto-select and set sync target to latest added playlist.
-      syncPlaylist.set(playlist);
+      // Auto-select the latest added playlist.
       await this.selectPlaylist(playlist);
     } catch (err) {
       if (err instanceof HttpErrorResponse) {
@@ -85,12 +80,6 @@ export class SpotifyService {
     }
   }
 
-  /** Set explicit sync target playlist (can differ from current viewed playlist). */
-  setSyncPlaylist(playlist: Playlist): void {
-    syncPlaylist.set(playlist);
-    persistPlaylistState();
-  }
-
   /** Fetch tracks for a given playlist, updating state signals. */
   async selectPlaylist(playlist: Playlist, options: { persist?: boolean } = {}): Promise<void> {
     selectedPlaylist.set(playlist);
@@ -98,10 +87,6 @@ export class SpotifyService {
       this.http.get<Track[]>(`/api/spotify/playlists/${playlist.id}/tracks`)
     );
     tracks.set(data);
-
-    if (!syncPlaylist()) {
-      syncPlaylist.set(playlist);
-    }
 
     if (options.persist !== false) {
       persistPlaylistState();
@@ -119,9 +104,6 @@ export class SpotifyService {
       tracks.set([]);
     }
 
-    if (syncPlaylist()?.id === id) {
-      syncPlaylist.set(next[0] ?? null);
-    }
 
     persistPlaylistState();
   }

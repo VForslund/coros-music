@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/victor/coros-music/internal/httpx"
 )
 
 const Boundary = "corospart"
@@ -31,8 +33,8 @@ func NewWriter(w http.ResponseWriter, total int) *Writer {
 func (mw *Writer) WritePart(filename string, data []byte) error {
 	mw.index++
 
-	header := fmt.Sprintf("\r\n--%s\r\nContent-Disposition: attachment; filename=%q\r\nX-Track-Index: %d\r\nX-Track-Total: %d\r\n\r\n",
-		Boundary, filename, mw.index, mw.total)
+	header := fmt.Sprintf("\r\n--%s\r\nContent-Disposition: %s\r\nX-Track-Index: %d\r\nX-Track-Total: %d\r\n\r\n",
+		Boundary, httpx.FormatAttachmentContentDisposition(filename), mw.index, mw.total)
 
 	if _, err := io.WriteString(mw.w, header); err != nil {
 		return fmt.Errorf("write part header: %w", err)
@@ -53,8 +55,8 @@ func (mw *Writer) WritePart(filename string, data []byte) error {
 func (mw *Writer) WriteErrorPart(filename, errMsg string) error {
 	mw.index++
 
-	header := fmt.Sprintf("\r\n--%s\r\nContent-Disposition: attachment; filename=%q\r\nX-Track-Index: %d\r\nX-Track-Total: %d\r\nX-Track-Error: %s\r\n\r\n",
-		Boundary, filename, mw.index, mw.total, errMsg)
+	header := fmt.Sprintf("\r\n--%s\r\nContent-Disposition: %s\r\nX-Track-Index: %d\r\nX-Track-Total: %d\r\nX-Track-Error: %s\r\n\r\n",
+		Boundary, httpx.FormatAttachmentContentDisposition(filename), mw.index, mw.total, errMsg)
 
 	if _, err := io.WriteString(mw.w, header); err != nil {
 		return fmt.Errorf("write error part: %w", err)
@@ -76,4 +78,3 @@ func (mw *Writer) Close() error {
 	}
 	return err
 }
-
