@@ -1,0 +1,93 @@
+<div class="p-5">
+  <h2 class="text-[10px] font-bold uppercase tracking-[0.2em] text-gray-500 mb-4">Playlists</h2>
+
+  <!-- Add playlist input -->
+  <div class="mb-5">
+    <div class="flex gap-2">
+      <input
+        type="text"
+        placeholder="Paste Spotify playlist link…"
+        [value]="playlistInput()"
+        (input)="playlistInput.set($any($event.target).value)"
+        (keydown.enter)="addPlaylist()"
+        class="flex-1 px-3.5 py-2.5 rounded-xl bg-gray-800/80 border border-gray-700/50 text-gray-200 text-sm placeholder-gray-600 focus:outline-none focus:border-coros/50 focus:bg-gray-800 transition-all"
+      />
+      <button
+        (click)="addPlaylist()"
+        [disabled]="loading()"
+        class="px-4 py-2.5 rounded-xl bg-coros hover:bg-coros-light text-white text-sm font-bold transition-all disabled:opacity-40 shadow-sm shadow-coros/10 hover:shadow-coros/20"
+      >
+        @if (loading()) {
+          <span class="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+        } @else {
+          +
+        }
+      </button>
+    </div>
+    @if (error()) {
+      <p class="mt-2 text-xs text-red-400 font-medium">{{ error() }}</p>
+    }
+  </div>
+
+  @if (playlists().length === 0) {
+    <div class="text-center py-12">
+      <div class="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gray-800/50 flex items-center justify-center">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="text-gray-600">
+          <path d="M9 18V5l12-2v13"/>
+          <circle cx="6" cy="18" r="3"/>
+          <circle cx="18" cy="16" r="3"/>
+        </svg>
+      </div>
+      <p class="text-gray-500 text-sm font-medium">No playlists yet</p>
+      <p class="text-gray-600 text-xs mt-1.5 max-w-48 mx-auto leading-relaxed">Paste a Spotify playlist link above to get started</p>
+    </div>
+  } @else {
+    <ul class="space-y-1.5">
+      @for (p of playlists(); track p.id) {
+        <li>
+          <button
+            (click)="select(p)"
+            class="w-full text-left px-3 py-3 rounded-xl transition-all flex items-center gap-3 group"
+            [class]="p.id === selectedPlaylist()?.id
+              ? 'bg-coros/10 border border-coros/20 ring-1 ring-coros/10'
+              : 'hover:bg-gray-800/60 border border-transparent'"
+          >
+            @if (p.imageURL) {
+              <img [src]="p.imageURL" class="w-11 h-11 rounded-lg object-cover shadow-sm" [alt]="p.name" />
+            } @else {
+              <div class="w-11 h-11 rounded-lg bg-gray-800 flex items-center justify-center">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="text-gray-600">
+                  <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+                </svg>
+              </div>
+            }
+            <div class="min-w-0 flex-1">
+              <div class="font-semibold text-sm truncate" [class]="p.id === selectedPlaylist()?.id ? 'text-coros-light' : ''">{{ p.name }}</div>
+              <div class="text-[11px] text-gray-500 mt-0.5 flex items-center gap-2">
+                <span>{{ p.trackCount }} tracks</span>
+                @if (syncPlaylist()?.id === p.id) {
+                  <span class="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-semibold uppercase text-[9px] tracking-wide">Sync Target</span>
+                }
+              </div>
+            </div>
+            <button
+              (click)="setSyncTarget(p, $event)"
+              class="opacity-0 group-hover:opacity-100 text-[10px] px-2 py-1 rounded-md bg-orange-500/15 text-orange-300 hover:bg-orange-500/25 transition-all"
+              title="Use this playlist for sync"
+            >Sync</button>
+            <button
+              (click)="remove(p.id, $event)"
+              class="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400 transition-all p-1 rounded-lg hover:bg-red-400/10"
+              title="Remove"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </button>
+        </li>
+      }
+    </ul>
+  }
+</div>
+
