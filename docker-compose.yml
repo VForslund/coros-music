@@ -7,9 +7,9 @@ services:
     environment:
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID}
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET}
+      COROS_DATA_DIR: /root/.coros-music
     volumes:
       - ./coros-data:/root/.coros-music
 
 volumes:
   coros-data:
-
