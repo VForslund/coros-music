@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/victor/coros-music/internal/pipeline"
@@ -57,9 +59,26 @@ func main() {
 	}
 
 	log.Printf("CorosMusic server starting on https://0.0.0.0:%s", port)
-	if err := http.ListenAndServeTLS(":"+port, certFile, keyFile, mux); err != nil {
+	server := &http.Server{
+		Addr:     ":" + port,
+		Handler:  mux,
+		ErrorLog: log.New(tlsNoiseFilterWriter{}, "", log.LstdFlags),
+	}
+	if err := server.ListenAndServeTLS(certFile, keyFile); err != nil {
 		log.Fatal(err)
 	}
+}
+
+type tlsNoiseFilterWriter struct{}
+
+func (tlsNoiseFilterWriter) Write(p []byte) (int, error) {
+	msg := string(p)
+	// Suppress expected browser probe noise for self-signed certs.
+	if strings.Contains(msg, "http: TLS handshake error") &&
+		(strings.Contains(msg, "unknown certificate") || strings.Contains(msg, "bad certificate")) {
+		return len(p), nil
+	}
+	return os.Stderr.Write(p)
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -92,7 +111,10 @@ func ensureTLSCertFiles() (certPath string, keyPath string, err error) {
 	keyPath = filepath.Join(dataDir, "key.pem")
 
 	if fileExists(certPath) && fileExists(keyPath) {
-		return certPath, keyPath, nil
+		if _, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
+			return certPath, keyPath, nil
+		}
+		log.Printf("existing TLS files are invalid, regenerating: %v", err)
 	}
 
 	certPEM, keyPEM, err := generateSelfSignedCertPEM()
