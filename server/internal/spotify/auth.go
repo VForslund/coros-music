@@ -15,10 +15,24 @@ import (
 	"golang.org/x/oauth2/clientcredentials"
 )
 
+type PlaylistJSON struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	TrackCount int    `json:"trackCount"`
+	ImageURL   string `json:"imageURL"`
+}
+
+type TrackJSON struct {
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Artist       string `json:"artist"`
+	Album        string `json:"album"`
+	DurationMs   int    `json:"durationMs"`
+	SyncFilename string `json:"syncFilename"`
+}
+
 var playlistIDPattern = regexp.MustCompile(`^[a-zA-Z0-9]{22}$`)
 
-// Auth uses Client Credentials flow — no user login needed.
-// Works for any public playlist. Only requires SPOTIFY_CLIENT_ID + SPOTIFY_CLIENT_SECRET.
 type Auth struct {
 	mu     sync.RWMutex
 	client *spotifyLib.Client
@@ -73,15 +87,11 @@ func writeSpotifyError(w http.ResponseWriter, action string, err error) {
 }
 
 func (a *Auth) HandleStatus(w http.ResponseWriter, r *http.Request) {
-	// Always authenticated with client credentials
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"authenticated":true}`))
 }
 
 func (a *Auth) HandlePlaylists(w http.ResponseWriter, r *http.Request) {
-	// Client credentials can't list "current user's" playlists (no user context).
-	// Instead, the frontend will let users paste a playlist URL/ID directly.
-	// This endpoint now accepts a query param ?userId= to fetch a user's public playlists.
 	client := a.getClient()
 	ctx := r.Context()
 
@@ -97,13 +107,6 @@ func (a *Auth) HandlePlaylists(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "failed to fetch playlists: "+err.Error(), http.StatusInternalServerError)
 		return
-	}
-
-	type PlaylistJSON struct {
-		ID         string `json:"id"`
-		Name       string `json:"name"`
-		TrackCount int    `json:"trackCount"`
-		ImageURL   string `json:"imageURL"`
 	}
 
 	result := make([]PlaylistJSON, 0, len(playlists.Playlists))
@@ -124,7 +127,6 @@ func (a *Auth) HandlePlaylists(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-// HandlePlaylistByID fetches a single playlist by ID (works for any public playlist).
 func (a *Auth) HandlePlaylistByID(w http.ResponseWriter, r *http.Request) {
 	client := a.getClient()
 	if client == nil {
@@ -142,13 +144,6 @@ func (a *Auth) HandlePlaylistByID(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeSpotifyError(w, "failed to fetch playlist", err)
 		return
-	}
-
-	type PlaylistJSON struct {
-		ID         string `json:"id"`
-		Name       string `json:"name"`
-		TrackCount int    `json:"trackCount"`
-		ImageURL   string `json:"imageURL"`
 	}
 
 	img := ""
@@ -178,44 +173,34 @@ func (a *Auth) HandleTracks(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
-	type TrackJSON struct {
-		ID           string `json:"id"`
-		Title        string `json:"title"`
-		Artist       string `json:"artist"`
-		Album        string `json:"album"`
-		DurationMs   int    `json:"durationMs"`
-		SyncFilename string `json:"syncFilename"`
-	}
-
 	var allTracks []TrackJSON
 	offset := 0
 	limit := 100
 
 	for {
-		tracks, err := client.GetPlaylistTracks(ctx, spotifyLib.ID(playlistID),
-			spotifyLib.Limit(limit), spotifyLib.Offset(offset))
+		playListItems, err := client.GetPlaylistItems(ctx, spotifyLib.ID(playlistID), spotifyLib.Limit(limit), spotifyLib.Offset(offset))
 		if err != nil {
 			writeSpotifyError(w, "failed to fetch tracks", err)
 			return
 		}
 
-		for _, item := range tracks.Tracks {
+		for _, item := range playListItems.Items {
 			t := item.Track
 			artist := ""
-			if len(t.Artists) > 0 {
-				artist = t.Artists[0].Name
+			if len(t.Track.Artists) > 0 {
+				artist = t.Track.Artists[0].Name
 			}
 			allTracks = append(allTracks, TrackJSON{
-				ID:           string(t.ID),
-				Title:        t.Name,
+				ID:           string(t.Track.ID),
+				Title:        t.Track.Name,
 				Artist:       artist,
-				Album:        t.Album.Name,
-				DurationMs:   int(t.Duration),
-				SyncFilename: sanitizeFilename(artist, t.Name),
+				Album:        t.Track.Album.Name,
+				DurationMs:   int(t.Track.Duration),
+				SyncFilename: sanitizeFilename(artist, t.Track.Name),
 			})
 		}
 
-		if len(tracks.Tracks) < limit {
+		if len(playListItems.Items) < limit {
 			break
 		}
 		offset += limit
